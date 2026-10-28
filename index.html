@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Smart Energy Meter (Blynk)</title>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--tx:#e2e8f0;--mu:#94a3b8;--ac:#38bdf8;--ok:#22c55e;--bad:#ef4444}
+*{box-sizing:border-box}body{margin:0 auto;font-family:system-ui,sans-serif;background:var(--bg);color:var(--tx);padding:16px;max-width:1100px}
+header{display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:center;margin-bottom:12px}
+h1{font-size:1.3rem;margin:0}.dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px;background:var(--ok)}
+.set{background:var(--card);border-radius:12px;padding:12px;margin-bottom:14px;display:flex;flex-wrap:wrap;gap:8px;align-items:end}
+.set label{font-size:.75rem;color:var(--mu);display:flex;flex-direction:column;gap:3px}
+input{background:#0f172a;border:1px solid #334155;color:var(--tx);padding:8px;border-radius:8px}
+button{background:var(--ac);border:0;color:#04293a;padding:9px 14px;border-radius:8px;font-weight:600;cursor:pointer}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px}
+.c{background:var(--card);border-radius:12px;padding:14px}.c small{color:var(--mu)}
+.c b{display:block;font-size:1.7rem;margin-top:4px}.c span{font-size:.8rem;color:var(--mu)}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px}
+canvas{width:100%;height:220px;display:block}h2{font-size:.95rem;margin:0 0 8px;color:var(--mu);font-weight:600}
+.note{font-size:.75rem;color:var(--mu);margin-top:12px}
+</style></head><body>
+<header><h1>⚡ Smart Energy Meter</h1><span id="st"><i class="dot" style="background:#f59e0b"></i>Enter token</span></header>
+
+<div class="set">
+<label>Blynk Auth Token (same as in your Arduino code)<input id="tok" size="34" placeholder="paste token"></label>
+<label>Server<input id="srv" value="blynk.cloud" size="14"></label>
+<label>₹ / unit<input id="rate" value="8" size="4"></label>
+<button onclick="save()">Save &amp; Connect</button>
+<button onclick="demoOn()" style="background:#475569;color:#e2e8f0">Demo</button>
+</div>
+
+<div class="grid">
+<div class="c"><small>Voltage</small><b id="v">--</b><span>V</span></div>
+<div class="c"><small>Current</small><b id="i">--</b><span>A</span></div>
+<div class="c"><small>Power</small><b id="p">--</b><span>W</span></div>
+<div class="c"><small>Today</small><b id="td">--</b><span>units (kWh)</span></div>
+<div class="c"><small>This Month</small><b id="mo">--</b><span>units (kWh)</span></div>
+<div class="c"><small>Month bill</small><b id="bill">--</b><span>₹ estimated</span></div>
+<div class="c"><small>Total energy</small><b id="tot">--</b><span>kWh since reset</span></div>
+</div>
+
+<div class="row">
+<div class="c"><h2>Live power (last 60 readings)</h2><canvas id="live"></canvas></div>
+<div class="c"><h2>Daily units this month (kWh)</h2><canvas id="days"></canvas></div>
+</div>
+<p class="note">Today / month are worked out here from the meter's total energy (V3). Keep this page open, or open it at least once a day, so each day's starting value gets recorded.</p>
+
+<script>
+const $=id=>document.getElementById(id);
+let S=JSON.parse(localStorage.getItem('em')||'{}');S.starts=S.starts||{};
+let demo=false,pw=[],demoE=12.5,last={};
+$('tok').value=S.token||'';$('srv').value=S.server||'blynk.cloud';$('rate').value=S.rate||8;
+const keyOf=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+function persist(){localStorage.setItem('em',JSON.stringify(S));}
+function save(){S.token=$('tok').value.trim();S.server=$('srv').value.trim()||'blynk.cloud';S.rate=+$('rate').value||8;demo=false;persist();tick();}
+function demoOn(){demo=true;}
+function status(t,c){$('st').innerHTML='<i class="dot" style="background:'+c+'"></i>'+t;}
+
+async function read(){
+  if(demo){const v=230+Math.random()*3,p=400+Math.sin(Date.now()/6000)*250;demoE+=p/3600000*2;return{v,i:p/v,p,e:demoE};}
+  const u=`https://${S.server}/external/api/get?token=${S.token}&v0&v1&v2&v3&v4`;
+  const r=await fetch(u);if(!r.ok)throw new Error(r.status);
+  const j=await r.json();return{v:+j.v0||0,i:+j.v1||0,p:+j.v2||0,e:+j.v3||0};
+}
+function compute(e){
+  const now=new Date(),tk=keyOf(now),pre=S.starts;
+  const store=demo?(S.demoStarts=S.demoStarts||{}):pre;
+  Object.keys(store).forEach(k=>{if(store[k]>e)store[k]=0;});   // meter was reset
+  if(store[tk]==null)store[tk]=e;
+  const ym=tk.slice(0,7),ks=Object.keys(store).filter(k=>k.startsWith(ym)).sort();
+  const today=e-store[tk],month=e-store[ks[0]];
+  const dim=new Date(now.getFullYear(),now.getMonth()+1,0).getDate(),arr=[];
+  for(let d=1;d<=dim;d++){
+    const k=ym+'-'+String(d).padStart(2,'0'),n=ym+'-'+String(d+1).padStart(2,'0');
+    let val=0;if(store[k]!=null){if(k==tk)val=today;else if(store[n]!=null)val=store[n]-store[k];}
+    arr.push(Math.max(0,val));
+  }
+  persist();return{today,month,arr,tk};
+}
+async function tick(){
+  if(!demo&&!S.token)return;
+  try{
+    const x=await read(),c=compute(x.e);
+    $('v').textContent=x.v.toFixed(1);$('i').textContent=x.i.toFixed(2);$('p').textContent=x.p.toFixed(0);
+    $('td').textContent=c.today.toFixed(3);$('mo').textContent=c.month.toFixed(2);
+    $('tot').textContent=x.e.toFixed(3);$('bill').textContent='₹'+(c.month*(+$('rate').value||0)).toFixed(0);
+    pw.push(x.p);if(pw.length>60)pw.shift();last=c;draw(c);
+    status(demo?'Demo mode':'Live – Blynk cloud','#22c55e');
+  }catch(e){status('Cannot reach Blynk – check token/server','#ef4444');}
+}
+function setup(c){const r=devicePixelRatio||1;c.width=c.clientWidth*r;c.height=c.clientHeight*r;const x=c.getContext('2d');x.scale(r,r);return[x,c.clientWidth,c.clientHeight];}
+function draw(c){
+  let[x,w,h]=setup($('live'));const mx=Math.max(100,...pw)*1.1;
+  x.strokeStyle='#334155';x.fillStyle='#94a3b8';x.font='11px sans-serif';
+  for(let g=0;g<=4;g++){const y=h-18-(h-28)*g/4;x.beginPath();x.moveTo(36,y);x.lineTo(w,y);x.stroke();x.fillText(Math.round(mx*g/4),0,y+4);}
+  x.strokeStyle='#38bdf8';x.lineWidth=2;x.beginPath();
+  pw.forEach((p,k)=>{const px=36+(w-36)*k/59,py=h-18-(h-28)*p/mx;k?x.lineTo(px,py):x.moveTo(px,py)});x.stroke();
+  [x,w,h]=setup($('days'));const a=c.arr,m2=Math.max(1,...a)*1.15,bw=(w-30)/a.length,td=+c.tk.slice(8);
+  a.forEach((v,k)=>{x.fillStyle=k+1==td?'#22c55e':'#38bdf8';const bh=(h-24)*v/m2;x.fillRect(30+k*bw+1,h-18-bh,bw-2,bh);
+    if(k%5==0||k+1==td){x.fillStyle='#94a3b8';x.font='10px sans-serif';x.fillText(k+1,30+k*bw,h-4);}});
+  x.fillStyle='#94a3b8';x.fillText(m2.toFixed(1),0,12);
+}
+setInterval(tick,2000);tick();addEventListener('resize',()=>last.arr&&draw(last));
+</script></body></html>
